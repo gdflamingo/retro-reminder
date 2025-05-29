@@ -1,0 +1,163 @@
+import sys
+import time
+import threading
+import requests
+import schedule
+import pygame
+
+# Configuration
+events = [
+    {"name": "Team Meeting", "datetime": "2025-06-01 15:00"},
+    {"name": "Project Deadline", "datetime": "2025-06-05 09:00"},
+]
+currency_pairs = [("USD", "BRL"), ("EUR", "USD")]
+update_interval = 60  # seconds
+
+# Pygame setup
+pygame.init()
+WIDTH, HEIGHT = 600, 300
+display = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Retro Notifier")
+font = pygame.font.SysFont('Courier', 16)
+clock = pygame.time.Clock()
+
+# Colors
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+
+# Notification queue
+notifications = []
+lock = threading.Lock()
+
+# Input/edit state
+mode = 'view'  # 'view', 'add', 'edit'
+input_text = ''
+input_date = ''
+selected_event = 0
+editing_event = None
+field = 'name'  # 'name' or 'date'
+
+# Fetch currency quotes periodically
+def fetch_currency_quotes():
+    try:
+        quotes = []
+        for base, target in currency_pairs:
+            resp = requests.get(
+                f"https://api.exchangerate.host/latest?base={base}&symbols={target}")
+            data = resp.json()
+            rate = data['rates'][target]
+            quotes.append(f"{base}/{target}: {rate:.2f}")
+        with lock:
+            notifications.append(("Currency", " | ".join(quotes)))
+    except Exception as e:
+        with lock:
+            notifications.append(("Error", str(e)))
+
+# Check for event alerts
+def check_events():
+    now = time.strftime("%Y-%m-%d %H:%M")
+    for ev in events:
+        if ev['datetime'].startswith(now):
+            with lock:
+                notifications.append(("Event", ev['name']))
+
+# Scheduler thread
+def scheduler_thread():
+    schedule.every(update_interval).seconds.do(fetch_currency_quotes)
+    schedule.every(1).minutes.do(check_events)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# Render functions
+def draw_notifications():
+    display.fill(BLACK)
+    # Show notifications
+    with lock:
+        for i, (typ, msg) in enumerate(notifications[-5:]):
+            text = font.render(f"[{typ}] {msg}", False, WHITE)
+            display.blit(text, (10, 10 + i * 20))
+
+    # Show event list
+    y_off = 120
+    for idx, ev in enumerate(events):
+        prefix = '>' if idx == selected_event and mode == 'view' else ' '
+        ev_text = f"{prefix} {ev['name']} @ {ev['datetime']}"
+        text = font.render(ev_text, False, WHITE)
+        display.blit(text, (10, y_off + idx * 20))
+
+    # Show input form
+    if mode in ('add', 'edit'):
+        form_title = "Add New Event" if mode == 'add' else "Edit Event"
+        display.blit(font.render(form_title, False, WHITE), (350, 120))
+        name_label = font.render("Name:", False, WHITE)
+        date_label = font.render("Datetime (YYYY-MM-DD HH:MM):", False, WHITE)
+        display.blit(name_label, (350, 150))
+        display.blit(font.render(input_text + ('_' if field=='name' else ''), False, WHITE), (350, 170))
+        display.blit(date_label, (350, 200))
+        display.blit(font.render(input_date + ('_' if field=='date' else ''), False, WHITE), (350, 220))
+
+    # Simple animation
+    t = time.time()
+    x = int((WIDTH - 20) / 2 + (WIDTH/4) * pygame.math.sin(t))
+    y = HEIGHT - 30
+    pygame.draw.circle(display, WHITE, (x, y), 5)
+
+# Main loop
+def main():
+    global mode, input_text, input_date, selected_event, editing_event, field
+    threading.Thread(target=scheduler_thread, daemon=True).start()
+
+    while True:
+        for evt in pygame.event.get():
+            if evt.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif evt.type == pygame.KEYDOWN:
+                if mode == 'view':
+                    if evt.key == pygame.K_DOWN:
+                        selected_event = (selected_event + 1) % len(events)
+                    elif evt.key == pygame.K_UP:
+                        selected_event = (selected_event - 1) % len(events)
+                    elif evt.key == pygame.K_n:  # add new
+                        mode = 'add'
+                        input_text = ''
+                        input_date = ''
+                        field = 'name'
+                    elif evt.key == pygame.K_e:  # edit
+                        mode = 'edit'
+                        editing_event = selected_event
+                        input_text = events[selected_event]['name']
+                        input_date = events[selected_event]['datetime']
+                        field = 'name'
+                    elif evt.key == pygame.K_x:  # delete
+                        if events:
+                            events.pop(selected_event)
+                            selected_event = max(0, selected_event-1)
+                    elif evt.key == pygame.K_d:  # duplicate
+                        ev = events[selected_event]
+                        events.append(ev.copy())
+                else:  # add or edit mode
+                    if evt.key == pygame.K_TAB:
+                        field = 'date' if field=='name' else 'name'
+                    elif evt.key == pygame.K_BACKSPACE:
+                        if field == 'name': input_text = input_text[:-1]
+                        else: input_date = input_date[:-1]
+                    elif evt.key == pygame.K_RETURN:
+                        if mode == 'add':
+                            events.append({"name": input_text, "datetime": input_date})
+                        elif mode == 'edit':
+                            ev = events[editing_event]
+                            ev['name'], ev['datetime'] = input_text, input_date
+                        mode = 'view'
+                    else:
+                        ch = evt.unicode
+                        if field=='name': input_text += ch
+                        else: input_date += ch
+
+        draw_notifications()
+        pygame.display.update()
+        clock.tick(30)
+
+if __name__ == '__main__':
+    main()
